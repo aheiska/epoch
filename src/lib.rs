@@ -52,7 +52,7 @@ impl FromStr for TzConfig {
         let trimmed = s.trim();
         let lower = trimmed.to_lowercase();
 
-        if lower == "utc" || lower == "z" || lower == "gmt" {
+        if lower == "utc" || lower == "z" {
             return Ok(TzConfig::Utc);
         }
 
