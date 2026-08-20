@@ -287,45 +287,33 @@ pub fn format_datetime(dt: DateTime<Utc>, tz: &TzConfig, format: Option<&str>) -
         || fmt.eq_ignore_ascii_case("iso-8601");
     let is_rfc2822 = fmt.eq_ignore_ascii_case("rfc2822") || fmt.eq_ignore_ascii_case("rfc-2822");
 
+    fn format_inner<Tz: TimeZone>(
+        dt: DateTime<Tz>,
+        is_rfc3339: bool,
+        is_rfc2822: bool,
+        fmt: &str,
+        use_z: bool,
+    ) -> String
+    where
+        Tz::Offset: std::fmt::Display,
+    {
+        if is_rfc3339 {
+            dt.to_rfc3339_opts(SecondsFormat::AutoSi, use_z)
+        } else if is_rfc2822 {
+            dt.to_rfc2822()
+        } else {
+            dt.format(fmt).to_string()
+        }
+    }
+
     match tz {
-        TzConfig::Utc => {
-            if is_rfc3339 {
-                dt.to_rfc3339_opts(SecondsFormat::AutoSi, true)
-            } else if is_rfc2822 {
-                dt.to_rfc2822()
-            } else {
-                dt.format(fmt).to_string()
-            }
-        }
-        TzConfig::Local => {
-            let local_dt = dt.with_timezone(&Local);
-            if is_rfc3339 {
-                local_dt.to_rfc3339_opts(SecondsFormat::AutoSi, false)
-            } else if is_rfc2822 {
-                local_dt.to_rfc2822()
-            } else {
-                local_dt.format(fmt).to_string()
-            }
-        }
+        TzConfig::Utc => format_inner(dt, is_rfc3339, is_rfc2822, fmt, true),
+        TzConfig::Local => format_inner(dt.with_timezone(&Local), is_rfc3339, is_rfc2822, fmt, false),
         TzConfig::Named(named_tz) => {
-            let tz_dt = dt.with_timezone(named_tz);
-            if is_rfc3339 {
-                tz_dt.to_rfc3339_opts(SecondsFormat::AutoSi, false)
-            } else if is_rfc2822 {
-                tz_dt.to_rfc2822()
-            } else {
-                tz_dt.format(fmt).to_string()
-            }
+            format_inner(dt.with_timezone(named_tz), is_rfc3339, is_rfc2822, fmt, false)
         }
         TzConfig::Fixed(offset) => {
-            let fixed_dt = dt.with_timezone(offset);
-            if is_rfc3339 {
-                fixed_dt.to_rfc3339_opts(SecondsFormat::AutoSi, false)
-            } else if is_rfc2822 {
-                fixed_dt.to_rfc2822()
-            } else {
-                fixed_dt.format(fmt).to_string()
-            }
+            format_inner(dt.with_timezone(offset), is_rfc3339, is_rfc2822, fmt, false)
         }
     }
 }
@@ -577,6 +565,13 @@ mod tests {
         let tz_fixed: TzConfig = "+05:30".parse().unwrap();
         let formatted_fixed = format_datetime(dt, &tz_fixed, None);
         assert_eq!(formatted_fixed, "2024-06-10T11:43:20+05:30");
+
+        let tz_local = TzConfig::Local;
+        let formatted_local = format_datetime(dt, &tz_local, None);
+        assert!(!formatted_local.is_empty());
+
+        let formatted_rfc2822 = format_datetime(dt, &TzConfig::Utc, Some("rfc2822"));
+        assert_eq!(formatted_rfc2822, "Mon, 10 Jun 2024 06:13:20 +0000");
     }
 
     #[test]
