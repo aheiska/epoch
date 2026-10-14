@@ -23,7 +23,7 @@ require manual arithmetic (`/ 1000`) or other unnecessary complexity.
 - **Auto-detection**: Automatically determines whether an integer timestamp is in seconds, milliseconds, microseconds, or nanoseconds based on magnitude.
 - **Bidirectional**: Converts timestamps to dates and formatted dates back to epoch timestamps. Tries hard to detect the correct function from the input format
 - **Streaming & Batching**: Accepts input via CLI arguments or streamed line-by-line through `stdin`.
-- **Timezone Conversion**: Supports `UTC`, system `local`, fixed offsets (e.g., `+02:00`, `-05:00`), and named IANA timezones (e.g., `Europe/Helsinki`, `America/New_York`).
+- **Timezone Conversion**: Supports `UTC`, system `local`, fixed offsets (e.g., `+02:00`, `-05:00`), supported unambiguous abbreviations (e.g., `EEST`), and named IANA timezones (e.g., `Europe/Helsinki`, `America/New_York`).
 - **Custom Formatting**: Supports standard `strftime` formats as well as presets like `rfc3339` and `rfc2822`.
 - **Decimal / Sub-second Precision**: Supports fractional timestamps (e.g., `1718000000.123`).
 
@@ -54,7 +54,7 @@ Arguments:
   [INPUT]...  Inputs to convert (timestamps or date strings). If empty or '-', reads from stdin line-by-line.
 
 Options:
-  -z, --tz <TIMEZONE>    Target timezone (e.g. 'UTC', 'local', 'Europe/Helsinki', '+02:00', '-05:00') [default: UTC]
+  -z, --tz <TIMEZONE>    Target timezone (e.g. 'UTC', 'local', 'Europe/Helsinki', 'EEST', '+02:00'). Abbreviations use fixed offsets, without DST changes. [default: UTC]
   -f, --format <FORMAT>  Output/input format string (e.g. '%Y-%m-%d %H:%M:%S', 'rfc3339', 'rfc2822')
   -u, --unit <UNIT>      Timestamp unit: auto, s, ms, us, ns [default: auto]
   -r, --reverse          Force conversion from date to timestamp (reverse mode)
@@ -116,6 +116,97 @@ epoch -z local 1718000000000
 epoch -z +02:00 1718000000000
 ```
 
+#### Timezone Abbreviations
+
+`-z` / `--tz` accepts the following explicit set of unambiguous abbreviations,
+case-insensitively. Each means **one constant UTC offset**, not a geographic
+timezone. No automatic timezone, daylight-saving, seasonal, or historical offset
+change is made with abbreviations, even if the abbreviation contains "Summer" or
+"Daylight". Abbreviations outside this table are not supported as abbreviation
+aliases; IANA timezone identifiers remain supported except for the explicitly
+rejected ambiguous names listed below.
+
+| Abbreviation | Meaning | Fixed UTC offset |
+| --- | --- | --- |
+| `UTC`, `Z` | Coordinated Universal Time | `+00:00` |
+| `GMT` | Greenwich Mean Time | `+00:00` |
+| `WET` | Western European Time | `+00:00` |
+| `WEST` | Western European Summer Time | `+01:00` |
+| `CET` | Central European Time | `+01:00` |
+| `CEST` | Central European Summer Time | `+02:00` |
+| `EET` | Eastern European Time | `+02:00` |
+| `EEST` | Eastern European Summer Time | `+03:00` |
+| `EDT` | Eastern Daylight Time | `-04:00` |
+| `MDT` | Mountain Daylight Time | `-06:00` |
+| `PDT` | Pacific Daylight Time | `-07:00` |
+| `AKST` | Alaska Standard Time | `-09:00` |
+| `AKDT` | Alaska Daylight Time | `-08:00` |
+| `HST` | Hawaii Standard Time | `-10:00` |
+| `HKT` | Hong Kong Time | `+08:00` |
+| `JST` | Japan Standard Time | `+09:00` |
+| `KST` | Korea Standard Time | `+09:00` |
+| `NPT` | Nepal Time | `+05:45` |
+| `AWST` | Australian Western Standard Time | `+08:00` |
+| `AEST` | Australian Eastern Standard Time | `+10:00` |
+| `AEDT` | Australian Eastern Daylight Time | `+11:00` |
+| `ACDT` | Australian Central Daylight Time | `+10:30` |
+| `NZST` | New Zealand Standard Time | `+12:00` |
+| `NZDT` | New Zealand Daylight Time | `+13:00` |
+| `CHAST` | Chatham Standard Time | `+12:45` |
+| `CHADT` | Chatham Daylight Time | `+13:45` |
+
+For example, midnight UTC on January 1, 2026 renders as **03:00 with `EEST`,
+not 02:00**, although Helsinki observes EET in January:
+
+```bash
+epoch -z EEST 1767225600
+# Output: 2026-01-01T03:00:00+03:00
+
+epoch -z Europe/Helsinki 1767225600
+# Output: 2026-01-01T02:00:00+02:00
+
+# Reverse conversion: an offset-free date is interpreted at the fixed +03:00
+epoch -z EEST -u s "2026-01-01T03:00:00"
+# Output: 1767225600
+```
+
+An offset-free input `2026-01-01T00:00:00` interpreted **in EEST** means
+`2025-12-31T21:00:00Z`. Date inputs that already contain `Z` or a numeric offset
+keep their explicit offset; `--tz` does not reinterpret them. Fixed-offset aliases
+(other than `UTC` / `Z`) use numeric offsets in output, including custom `%Z`
+formatting; the original abbreviation label is not retained. To apply actual seasonal rules, use a
+geographic IANA name instead.
+
+#### Unsupported Ambiguous Abbreviations
+
+These names are rejected because the same abbreviation names multiple timezones
+with different offsets. Examples include historical uses: a name is not made
+unique merely because one of its meanings is no longer in use. This also rejects
+legacy IANA identifiers such as `EST` and `MST` rather than silently selecting
+one meaning.
+
+| Rejected abbreviation | Conflicting meanings (UTC offsets) |
+| --- | --- |
+| `CST` | Central Standard (`-06:00`), China Standard (`+08:00`), Cuba Standard (`-05:00`) |
+| `CDT` | Central Daylight (`-05:00`), Cuba Daylight (`-04:00`) |
+| `IST` | India Standard (`+05:30`), Irish Standard (`+01:00`), Israel Standard (`+02:00`) |
+| `BST` | British Summer (`+01:00`), Bangladesh Standard (`+06:00`), Bougainville Standard (`+11:00`) |
+| `EST` | Eastern Standard in North America (`-05:00`), Eastern Standard in Australia (`+10:00`) |
+| `MST` | Mountain Standard (`-07:00`), historical Malaya Standard (`+07:30`) |
+| `PST` | Pacific Standard (`-08:00`), Philippine Standard (`+08:00`) |
+| `AST` | Atlantic Standard (`-04:00`), Arabia Standard (`+03:00`) |
+| `ADT` | Atlantic Daylight (`-03:00`), historical Arabia Daylight (`+04:00`) |
+| `GST` | Gulf Standard (`+04:00`), South Georgia Time (`-02:00`) |
+| `SST` | Samoa Standard (`-11:00`), Singapore Standard (`+08:00`) |
+| `NST` | Newfoundland Standard (`-03:30`), historical North Sumatra Time (`+06:30`) |
+| `AMT` | Armenia Time (`+04:00`), Amazon Time (`-04:00`) |
+| `WST` | Western Standard (`+08:00`), Western Samoa Time (`+13:00`) |
+| `ACST` | Australian Central Standard (`+09:30`), historical Acre Summer (`-04:00`) |
+
+Use a geographic name such as `America/Chicago`, `Asia/Shanghai`,
+`Asia/Kolkata`, or `Australia/Darwin` to specify a region's rules, or a numeric
+offset such as `-06:00`, `+05:30`, or `+09:30` to request a constant offset.
+
 ### Custom Formats
 
 ```bash
@@ -154,7 +245,7 @@ epoch -u us "2024-06-10 06:13:20" -f "%Y-%m-%d %H:%M:%S"
 
 ### Best Practices for Timezones
 - **Use Geographic Names**: Always prefer geographic area/city identifiers such as `Europe/Helsinki`, `America/New_York`, `Asia/Tokyo`, or `UTC`. Geographic identifiers contain full historical and future transition rules for Daylight Saving Time (DST).
-- **Avoid Seasonal Abbreviations**: 3–4 letter abbreviations such as `EEST`, `EDT`, `CEST`, or `BST` are informal seasonal labels and are not distinct timezone identifiers. Using `Europe/Helsinki` will automatically apply `+03:00` (EEST) in the summer and `+02:00` (EET) in the winter.
+- **Abbreviations Are Fixed Offsets**: Supported abbreviations such as `EEST`, `EDT`, and `CEST` never adjust for the date or DST; ambiguous abbreviations such as `BST` are rejected. Use `Europe/Helsinki` to automatically apply `+03:00` (EEST) in the summer and `+02:00` (EET) in the winter. See the supported and unsupported abbreviation tables above.
 - **Fixed Offsets**: If you need an exact static offset without DST transitions, use fixed offset format: `+02:00`, `-05:00`, `+0530`.
 
 ### How to Find Timezone Names on Your System

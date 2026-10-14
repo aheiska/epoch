@@ -23,7 +23,7 @@ struct Cli {
     #[arg(value_name = "INPUT")]
     inputs: Vec<String>,
 
-    /// Target timezone (e.g. 'UTC', 'local', 'Europe/Helsinki', '+02:00', '-05:00').
+    /// Target timezone (e.g. 'UTC', 'local', 'Europe/Helsinki', 'EEST', '+02:00'). Abbreviations use fixed offsets, without DST changes.
     #[arg(short = 'z', long = "tz", visible_alias = "timezone", default_value = "UTC")]
     timezone: String,
 
