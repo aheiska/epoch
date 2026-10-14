@@ -95,6 +95,32 @@ fn test_parse_timestamp_us() {
 }
 
 #[test]
+fn test_parse_timestamp_subseconds() {
+    for (unit, units_per_second, nanos_per_unit, name) in [
+        (TimestampUnit::Milliseconds, 1_000_i128, 1_000_000, "milliseconds"),
+        (TimestampUnit::Microseconds, 1_000_000, 1_000, "microseconds"),
+        (TimestampUnit::Nanoseconds, 1_000_000_000, 1, "nanoseconds"),
+    ] {
+        for (value, secs, nanos) in [
+            (0, 0, 0),
+            (1, 0, nanos_per_unit),
+            (-1, -1, 1_000_000_000 - nanos_per_unit),
+            (units_per_second, 1, 0),
+            (-units_per_second, -1, 0),
+        ] {
+            let dt = parse_timestamp(&value.to_string(), unit).unwrap();
+            assert_eq!(dt.timestamp(), secs, "{name}: {value}");
+            assert_eq!(dt.timestamp_subsec_nanos(), nanos, "{name}: {value}");
+        }
+        for value in [i128::MIN, i128::MAX] {
+            assert_eq!(parse_timestamp(&value.to_string(), unit).unwrap_err(), format!("Timestamp out of range: {value}"));
+        }
+        let value = i64::MAX as i128 * units_per_second;
+        assert_eq!(parse_timestamp(&value.to_string(), unit).unwrap_err(), format!("Invalid timestamp {name}: {value}"));
+    }
+}
+
+#[test]
 fn test_parse_timestamp_float() {
     let dt = parse_timestamp("1718000000.5", TimestampUnit::Auto).unwrap();
     assert_eq!(dt.to_rfc3339_opts(SecondsFormat::AutoSi, true), "2024-06-10T06:13:20.500Z");

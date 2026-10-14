@@ -1,6 +1,6 @@
 use chrono::{
-    DateTime, FixedOffset, Local, LocalResult, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone,
-    Utc,
+    DateTime, FixedOffset, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, SecondsFormat,
+    TimeZone, Utc,
 };
 use std::str::FromStr;
 
@@ -191,6 +191,16 @@ pub fn parse_timestamp(input: &str, unit: TimestampUnit) -> Result<DateTime<Utc>
         other => other,
     };
 
+    let parse_subseconds = |units_per_second: i128, nanos_per_unit: i128, unit_name: &str| {
+        let secs = val.div_euclid(units_per_second);
+        let nsecs = (val.rem_euclid(units_per_second) * nanos_per_unit) as u32;
+        if secs < (i64::MIN as i128) || secs > (i64::MAX as i128) {
+            return Err(format!("Timestamp out of range: {}", val));
+        }
+        DateTime::from_timestamp(secs as i64, nsecs)
+            .ok_or_else(|| format!("Invalid timestamp {}: {}", unit_name, val))
+    };
+
     match effective_unit {
         TimestampUnit::Seconds | TimestampUnit::Auto => {
             if val < (i64::MIN as i128) || val > (i64::MAX as i128) {
@@ -200,33 +210,13 @@ pub fn parse_timestamp(input: &str, unit: TimestampUnit) -> Result<DateTime<Utc>
                 .ok_or_else(|| format!("Invalid timestamp seconds: {}", val))
         }
         TimestampUnit::Milliseconds => {
-            let secs = val.div_euclid(1_000);
-            let rem_millis = val.rem_euclid(1_000);
-            let nsecs = (rem_millis * 1_000_000) as u32;
-            if secs < (i64::MIN as i128) || secs > (i64::MAX as i128) {
-                return Err(format!("Timestamp out of range: {}", val));
-            }
-            DateTime::from_timestamp(secs as i64, nsecs)
-                .ok_or_else(|| format!("Invalid timestamp milliseconds: {}", val))
+            parse_subseconds(1_000, 1_000_000, "milliseconds")
         }
         TimestampUnit::Microseconds => {
-            let secs = val.div_euclid(1_000_000);
-            let rem_micros = val.rem_euclid(1_000_000);
-            let nsecs = (rem_micros * 1_000) as u32;
-            if secs < (i64::MIN as i128) || secs > (i64::MAX as i128) {
-                return Err(format!("Timestamp out of range: {}", val));
-            }
-            DateTime::from_timestamp(secs as i64, nsecs)
-                .ok_or_else(|| format!("Invalid timestamp microseconds: {}", val))
+            parse_subseconds(1_000_000, 1_000, "microseconds")
         }
         TimestampUnit::Nanoseconds => {
-            let secs = val.div_euclid(1_000_000_000);
-            let rem_nanos = val.rem_euclid(1_000_000_000) as u32;
-            if secs < (i64::MIN as i128) || secs > (i64::MAX as i128) {
-                return Err(format!("Timestamp out of range: {}", val));
-            }
-            DateTime::from_timestamp(secs as i64, rem_nanos)
-                .ok_or_else(|| format!("Invalid timestamp nanoseconds: {}", val))
+            parse_subseconds(1_000_000_000, 1, "nanoseconds")
         }
     }
 }
@@ -249,18 +239,30 @@ fn parse_decimal_timestamp(trimmed: &str, unit: TimestampUnit) -> Result<DateTim
     let frac_str = parts[1];
     let is_negative = int_part < 0 || parts[0].starts_with('-');
 
+    let parse_fraction = |digits: usize| {
+        let mut nanos_str = frac_str.to_string();
+        if nanos_str.len() > digits {
+            nanos_str.truncate(digits);
+        } else {
+            while nanos_str.len() < digits {
+                nanos_str.push('0');
+            }
+        }
+        nanos_str.parse::<u32>().unwrap_or(0)
+    };
+
+    let parse_subseconds = |units_per_second: i128, nanos_per_unit: i128, digits: usize| {
+        let secs = int_part.div_euclid(units_per_second);
+        let nsecs = (int_part.rem_euclid(units_per_second) * nanos_per_unit) as u32
+            + parse_fraction(digits);
+        DateTime::from_timestamp(secs as i64, nsecs)
+            .ok_or_else(|| format!("Invalid timestamp: {}", trimmed))
+    };
+
     match effective_unit {
         TimestampUnit::Seconds | TimestampUnit::Auto => {
             // Fraction is sub-seconds (nanoseconds has 9 digits)
-            let mut nanos_str = frac_str.to_string();
-            if nanos_str.len() > 9 {
-                nanos_str.truncate(9);
-            } else {
-                while nanos_str.len() < 9 {
-                    nanos_str.push('0');
-                }
-            }
-            let nanos: u32 = nanos_str.parse().unwrap_or(0);
+            let nanos = parse_fraction(9);
             if is_negative {
                 let secs = int_part - 1;
                 let adj_nanos = 1_000_000_000 - nanos;
@@ -273,42 +275,13 @@ fn parse_decimal_timestamp(trimmed: &str, unit: TimestampUnit) -> Result<DateTim
         }
         TimestampUnit::Milliseconds => {
             // Decimal milliseconds: e.g. 1718000000000.5 -> ms + sub-millis
-            let mut nanos_str = frac_str.to_string();
-            if nanos_str.len() > 6 {
-                nanos_str.truncate(6);
-            } else {
-                while nanos_str.len() < 6 {
-                    nanos_str.push('0');
-                }
-            }
-            let sub_ms_nanos: u32 = nanos_str.parse().unwrap_or(0);
-            let secs = int_part.div_euclid(1_000);
-            let rem_millis = int_part.rem_euclid(1_000);
-            let nsecs = (rem_millis * 1_000_000) as u32 + sub_ms_nanos;
-            DateTime::from_timestamp(secs as i64, nsecs)
-                .ok_or_else(|| format!("Invalid timestamp: {}", trimmed))
+            parse_subseconds(1_000, 1_000_000, 6)
         }
         TimestampUnit::Microseconds => {
-            let mut nanos_str = frac_str.to_string();
-            if nanos_str.len() > 3 {
-                nanos_str.truncate(3);
-            } else {
-                while nanos_str.len() < 3 {
-                    nanos_str.push('0');
-                }
-            }
-            let sub_us_nanos: u32 = nanos_str.parse().unwrap_or(0);
-            let secs = int_part.div_euclid(1_000_000);
-            let rem_micros = int_part.rem_euclid(1_000_000);
-            let nsecs = (rem_micros * 1_000) as u32 + sub_us_nanos;
-            DateTime::from_timestamp(secs as i64, nsecs)
-                .ok_or_else(|| format!("Invalid timestamp: {}", trimmed))
+            parse_subseconds(1_000_000, 1_000, 3)
         }
         TimestampUnit::Nanoseconds => {
-            let secs = int_part.div_euclid(1_000_000_000);
-            let rem_nanos = int_part.rem_euclid(1_000_000_000) as u32;
-            DateTime::from_timestamp(secs as i64, rem_nanos)
-                .ok_or_else(|| format!("Invalid timestamp: {}", trimmed))
+            parse_subseconds(1_000_000_000, 1, 0)
         }
     }
 }
@@ -387,9 +360,7 @@ pub fn parse_date(input: &str, tz: &TzConfig, format: Option<&str>) -> Result<Da
                 return naive_to_utc(naive_dt, tz);
             }
             if let Ok(naive_date) = NaiveDate::parse_from_str(trimmed, fmt) {
-                let naive_dt = naive_date
-                    .and_hms_opt(0, 0, 0)
-                    .ok_or_else(|| "Invalid date".to_string())?;
+                let naive_dt = naive_date.and_time(NaiveTime::default());
                 return naive_to_utc(naive_dt, tz);
             }
         }
@@ -451,9 +422,7 @@ pub fn parse_date(input: &str, tz: &TzConfig, format: Option<&str>) -> Result<Da
 
     for pattern in date_only_patterns {
         if let Ok(naive_date) = NaiveDate::parse_from_str(trimmed, pattern) {
-            let naive_dt = naive_date
-                .and_hms_opt(0, 0, 0)
-                .ok_or_else(|| "Invalid date".to_string())?;
+            let naive_dt = naive_date.and_time(NaiveTime::default());
             return naive_to_utc(naive_dt, tz);
         }
     }
