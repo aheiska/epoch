@@ -413,6 +413,22 @@ pub fn parse_date(input: &str, tz: &TzConfig, format: Option<&str>) -> Result<Da
         }
     }
 
+    if let Some((_, time)) = trimmed.split_once(['T', ' ']) {
+        let suffix = match time.len() {
+            2 => Some(":00:00"),
+            5 => Some(":00"),
+            _ => None,
+        };
+        if let Some(suffix) = suffix {
+            let padded = format!("{trimmed}{suffix}");
+            for pattern in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"] {
+                if let Ok(naive_dt) = NaiveDateTime::parse_from_str(&padded, pattern) {
+                    return naive_to_utc(naive_dt, tz);
+                }
+            }
+        }
+    }
+
     let date_only_patterns = [
         "%Y-%m-%d",
         "%Y/%m/%d",
@@ -428,7 +444,7 @@ pub fn parse_date(input: &str, tz: &TzConfig, format: Option<&str>) -> Result<Da
     }
 
     Err(format!(
-        "Failed to parse date string '{}'. Expected RFC3339 (e.g. 2024-06-10T06:13:20Z) or YYYY-MM-DD HH:MM:SS",
+        "Failed to parse date string '{}'. Expected RFC3339 (e.g. 2024-06-10T06:13:20Z) or YYYY-MM-DD[T or space]HH[:MM[:SS]]",
         trimmed
     ))
 }

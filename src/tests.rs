@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn test_reduced_precision_dates() {
+    for separator in ["T", " "] {
+        for (time, full_time) in [("00", "00:00:00"), ("12", "12:00:00"), ("12:30", "12:30:00"), ("23:59", "23:59:00")] {
+            let input = format!("2026-06-01{separator}{time}");
+            let full = format!("2026-06-01T{full_time}");
+            for name in ["UTC", "EEST", "+05:30", "Europe/Helsinki"] {
+                let tz = name.parse::<TzConfig>().unwrap();
+                assert_eq!(parse_date(&input, &tz, None).unwrap(), parse_date(&full, &tz, None).unwrap(), "{input}: {name}");
+            }
+        }
+    }
+    assert_eq!(process_item("2026-06-01T12", false, TimestampUnit::Auto, &TzConfig::Utc, None).unwrap(), "1780315200000");
+}
+
+#[test]
+fn test_reduced_precision_dates_preserve_dst_rules() {
+    let tz = "Europe/Helsinki".parse::<TzConfig>().unwrap();
+    for (date, offset) in [("2026-01-01", "+02:00"), ("2026-06-01", "+03:00")] {
+        let expected = parse_date(&format!("{date}T12:00:00{offset}"), &TzConfig::Utc, None).unwrap();
+        assert_eq!(parse_date(&format!("{date}T12"), &tz, None).unwrap(), expected);
+    }
+    for time in ["03", "03:30"] {
+        assert!(parse_date(&format!("2026-03-29T{time}"), &tz, None).unwrap_err().contains("DST transition"));
+    }
+}
+
+#[test]
+fn test_reduced_precision_dates_reject_invalid_values() {
+    for input in ["2026-06-01T24", "2026-06-01T12:60", "2026-02-30T12", "2026-06-01T", "2026-06-01T12:", "2026-06-01T12:30:", "2026-06-01T12:30garbage"] {
+        assert!(parse_date(input, &TzConfig::Utc, None).is_err(), "{input}");
+    }
+}
+
+#[test]
 fn test_timezone_abbreviations() {
     let abbreviations = [
         ("GMT", 0), ("WET", 0), ("WEST", 3600),
