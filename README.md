@@ -90,6 +90,24 @@ $ epoch "2024-06-10 00:00:00" 2024-06-11 2024-06-10T06:13:20Z 1718064000000
 2024-06-11T00:00:00Z
 ```
 
+### Reduced-precision Date Inputs
+
+For `YYYY-MM-DD` dates followed by `T` or a space, trailing time components may be omitted:
+
+- `2026-06-01T12` means `2026-06-01T12:00:00`.
+- `2026-06-01T12:30` means `2026-06-01T12:30:00`.
+- `2026-06-01 12` and `2026-06-01 12:30` work the same way.
+
+Only missing trailing components default to zero; invalid supplied values are rejected.
+These forms have no embedded timezone: they use `--tz` (UTC by default), including
+the usual daylight-saving rules for named zones and fixed offsets for abbreviations.
+Include seconds when supplying an embedded timezone offset or `Z` (e.g. `2026-06-01T12:00:00Z`).
+
+```bash
+$ epoch '2026-06-01T12'
+1780315200000
+```
+
 ### Working with `stdin` Streams
 
 Pipe logs, JSON streams, or extracted columns directly:
