@@ -1,6 +1,6 @@
 use chrono::{
-    DateTime, FixedOffset, Local, LocalResult, NaiveDate, NaiveDateTime, SecondsFormat, TimeZone,
-    Utc,
+    DateTime, FixedOffset, Local, LocalResult, NaiveDate, NaiveDateTime, NaiveTime, SecondsFormat,
+    TimeZone, Utc,
 };
 use std::str::FromStr;
 
@@ -60,6 +60,41 @@ impl FromStr for TzConfig {
             return Ok(TzConfig::Local);
         }
 
+        // Abbreviations are fixed offsets, never geographic zones with DST rules.
+        let abbreviation_seconds = match lower.as_str() {
+            "gmt" | "wet" => Some(0),
+            "west" | "cet" => Some(3600),
+            "cest" | "eet" => Some(7200),
+            "eest" => Some(10800),
+            "edt" => Some(-14400),
+            "mdt" => Some(-21600),
+            "pdt" => Some(-25200),
+            "akst" => Some(-32400),
+            "akdt" => Some(-28800),
+            "hst" => Some(-36000),
+            "hkt" | "awst" => Some(28800),
+            "jst" | "kst" => Some(32400),
+            "npt" => Some(20700),
+            "aest" => Some(36000),
+            "aedt" => Some(39600),
+            "acdt" => Some(37800),
+            "nzst" => Some(43200),
+            "nzdt" => Some(46800),
+            "chast" => Some(45900),
+            "chadt" => Some(49500),
+            "cst" | "cdt" | "ist" | "bst" | "est" | "mst" | "pst" | "ast" | "adt"
+            | "gst" | "sst" | "nst" | "amt" | "wst" | "acst" => {
+                return Err(format!(
+                    "Ambiguous timezone abbreviation '{}': the name is used for multiple timezones. Use an IANA name (e.g. Europe/Helsinki, America/New_York) or an explicit offset (e.g. +03:00).",
+                    trimmed
+                ));
+            }
+            _ => None,
+        };
+        if let Some(seconds) = abbreviation_seconds {
+            return Ok(TzConfig::Fixed(FixedOffset::east_opt(seconds).unwrap()));
+        }
+
         // Try fixed offset format: +HH:MM, -HH:MM, +HHMM, -HHMM, +HH, -HH
         if let Some(offset) = parse_fixed_offset(trimmed) {
             return Ok(TzConfig::Fixed(offset));
@@ -79,7 +114,7 @@ impl FromStr for TzConfig {
         }
 
         Err(format!(
-            "Unknown timezone '{}'. Examples: UTC, local, Europe/Helsinki, America/New_York, +02:00, -05:00",
+            "Unknown timezone '{}'. Examples: UTC, local, EEST (fixed +03:00), Europe/Helsinki, America/New_York, +02:00, -05:00. See README for supported abbreviations.",
             trimmed
         ))
     }
@@ -156,6 +191,16 @@ pub fn parse_timestamp(input: &str, unit: TimestampUnit) -> Result<DateTime<Utc>
         other => other,
     };
 
+    let parse_subseconds = |units_per_second: i128, nanos_per_unit: i128, unit_name: &str| {
+        let secs = val.div_euclid(units_per_second);
+        let nsecs = (val.rem_euclid(units_per_second) * nanos_per_unit) as u32;
+        if secs < (i64::MIN as i128) || secs > (i64::MAX as i128) {
+            return Err(format!("Timestamp out of range: {}", val));
+        }
+        DateTime::from_timestamp(secs as i64, nsecs)
+            .ok_or_else(|| format!("Invalid timestamp {}: {}", unit_name, val))
+    };
+
     match effective_unit {
         TimestampUnit::Seconds | TimestampUnit::Auto => {
             if val < (i64::MIN as i128) || val > (i64::MAX as i128) {
@@ -165,33 +210,13 @@ pub fn parse_timestamp(input: &str, unit: TimestampUnit) -> Result<DateTime<Utc>
                 .ok_or_else(|| format!("Invalid timestamp seconds: {}", val))
         }
         TimestampUnit::Milliseconds => {
-            let secs = val.div_euclid(1_000);
-            let rem_millis = val.rem_euclid(1_000);
-            let nsecs = (rem_millis * 1_000_000) as u32;
-            if secs < (i64::MIN as i128) || secs > (i64::MAX as i128) {
-                return Err(format!("Timestamp out of range: {}", val));
-            }
-            DateTime::from_timestamp(secs as i64, nsecs)
-                .ok_or_else(|| format!("Invalid timestamp milliseconds: {}", val))
+            parse_subseconds(1_000, 1_000_000, "milliseconds")
         }
         TimestampUnit::Microseconds => {
-            let secs = val.div_euclid(1_000_000);
-            let rem_micros = val.rem_euclid(1_000_000);
-            let nsecs = (rem_micros * 1_000) as u32;
-            if secs < (i64::MIN as i128) || secs > (i64::MAX as i128) {
-                return Err(format!("Timestamp out of range: {}", val));
-            }
-            DateTime::from_timestamp(secs as i64, nsecs)
-                .ok_or_else(|| format!("Invalid timestamp microseconds: {}", val))
+            parse_subseconds(1_000_000, 1_000, "microseconds")
         }
         TimestampUnit::Nanoseconds => {
-            let secs = val.div_euclid(1_000_000_000);
-            let rem_nanos = val.rem_euclid(1_000_000_000) as u32;
-            if secs < (i64::MIN as i128) || secs > (i64::MAX as i128) {
-                return Err(format!("Timestamp out of range: {}", val));
-            }
-            DateTime::from_timestamp(secs as i64, rem_nanos)
-                .ok_or_else(|| format!("Invalid timestamp nanoseconds: {}", val))
+            parse_subseconds(1_000_000_000, 1, "nanoseconds")
         }
     }
 }
@@ -214,18 +239,30 @@ fn parse_decimal_timestamp(trimmed: &str, unit: TimestampUnit) -> Result<DateTim
     let frac_str = parts[1];
     let is_negative = int_part < 0 || parts[0].starts_with('-');
 
+    let parse_fraction = |digits: usize| {
+        let mut nanos_str = frac_str.to_string();
+        if nanos_str.len() > digits {
+            nanos_str.truncate(digits);
+        } else {
+            while nanos_str.len() < digits {
+                nanos_str.push('0');
+            }
+        }
+        nanos_str.parse::<u32>().unwrap_or(0)
+    };
+
+    let parse_subseconds = |units_per_second: i128, nanos_per_unit: i128, digits: usize| {
+        let secs = int_part.div_euclid(units_per_second);
+        let nsecs = (int_part.rem_euclid(units_per_second) * nanos_per_unit) as u32
+            + parse_fraction(digits);
+        DateTime::from_timestamp(secs as i64, nsecs)
+            .ok_or_else(|| format!("Invalid timestamp: {}", trimmed))
+    };
+
     match effective_unit {
         TimestampUnit::Seconds | TimestampUnit::Auto => {
             // Fraction is sub-seconds (nanoseconds has 9 digits)
-            let mut nanos_str = frac_str.to_string();
-            if nanos_str.len() > 9 {
-                nanos_str.truncate(9);
-            } else {
-                while nanos_str.len() < 9 {
-                    nanos_str.push('0');
-                }
-            }
-            let nanos: u32 = nanos_str.parse().unwrap_or(0);
+            let nanos = parse_fraction(9);
             if is_negative {
                 let secs = int_part - 1;
                 let adj_nanos = 1_000_000_000 - nanos;
@@ -238,42 +275,13 @@ fn parse_decimal_timestamp(trimmed: &str, unit: TimestampUnit) -> Result<DateTim
         }
         TimestampUnit::Milliseconds => {
             // Decimal milliseconds: e.g. 1718000000000.5 -> ms + sub-millis
-            let mut nanos_str = frac_str.to_string();
-            if nanos_str.len() > 6 {
-                nanos_str.truncate(6);
-            } else {
-                while nanos_str.len() < 6 {
-                    nanos_str.push('0');
-                }
-            }
-            let sub_ms_nanos: u32 = nanos_str.parse().unwrap_or(0);
-            let secs = int_part.div_euclid(1_000);
-            let rem_millis = int_part.rem_euclid(1_000);
-            let nsecs = (rem_millis * 1_000_000) as u32 + sub_ms_nanos;
-            DateTime::from_timestamp(secs as i64, nsecs)
-                .ok_or_else(|| format!("Invalid timestamp: {}", trimmed))
+            parse_subseconds(1_000, 1_000_000, 6)
         }
         TimestampUnit::Microseconds => {
-            let mut nanos_str = frac_str.to_string();
-            if nanos_str.len() > 3 {
-                nanos_str.truncate(3);
-            } else {
-                while nanos_str.len() < 3 {
-                    nanos_str.push('0');
-                }
-            }
-            let sub_us_nanos: u32 = nanos_str.parse().unwrap_or(0);
-            let secs = int_part.div_euclid(1_000_000);
-            let rem_micros = int_part.rem_euclid(1_000_000);
-            let nsecs = (rem_micros * 1_000) as u32 + sub_us_nanos;
-            DateTime::from_timestamp(secs as i64, nsecs)
-                .ok_or_else(|| format!("Invalid timestamp: {}", trimmed))
+            parse_subseconds(1_000_000, 1_000, 3)
         }
         TimestampUnit::Nanoseconds => {
-            let secs = int_part.div_euclid(1_000_000_000);
-            let rem_nanos = int_part.rem_euclid(1_000_000_000) as u32;
-            DateTime::from_timestamp(secs as i64, rem_nanos)
-                .ok_or_else(|| format!("Invalid timestamp: {}", trimmed))
+            parse_subseconds(1_000_000_000, 1, 0)
         }
     }
 }
@@ -352,9 +360,7 @@ pub fn parse_date(input: &str, tz: &TzConfig, format: Option<&str>) -> Result<Da
                 return naive_to_utc(naive_dt, tz);
             }
             if let Ok(naive_date) = NaiveDate::parse_from_str(trimmed, fmt) {
-                let naive_dt = naive_date
-                    .and_hms_opt(0, 0, 0)
-                    .ok_or_else(|| "Invalid date".to_string())?;
+                let naive_dt = naive_date.and_time(NaiveTime::default());
                 return naive_to_utc(naive_dt, tz);
             }
         }
@@ -416,9 +422,7 @@ pub fn parse_date(input: &str, tz: &TzConfig, format: Option<&str>) -> Result<Da
 
     for pattern in date_only_patterns {
         if let Ok(naive_date) = NaiveDate::parse_from_str(trimmed, pattern) {
-            let naive_dt = naive_date
-                .and_hms_opt(0, 0, 0)
-                .ok_or_else(|| "Invalid date".to_string())?;
+            let naive_dt = naive_date.and_time(NaiveTime::default());
             return naive_to_utc(naive_dt, tz);
         }
     }
@@ -511,95 +515,4 @@ pub fn process_item(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_unit_parsing() {
-        assert_eq!("auto".parse::<TimestampUnit>().unwrap(), TimestampUnit::Auto);
-        assert_eq!("s".parse::<TimestampUnit>().unwrap(), TimestampUnit::Seconds);
-        assert_eq!("ms".parse::<TimestampUnit>().unwrap(), TimestampUnit::Milliseconds);
-        assert_eq!("us".parse::<TimestampUnit>().unwrap(), TimestampUnit::Microseconds);
-        assert_eq!("ns".parse::<TimestampUnit>().unwrap(), TimestampUnit::Nanoseconds);
-    }
-
-    #[test]
-    fn test_unit_detection() {
-        assert_eq!(detect_unit(1_718_000_000), TimestampUnit::Seconds);
-        assert_eq!(detect_unit(1_718_000_000_000), TimestampUnit::Milliseconds);
-        assert_eq!(detect_unit(1_718_000_000_000_000), TimestampUnit::Microseconds);
-        assert_eq!(detect_unit(1_718_000_000_000_000_000), TimestampUnit::Nanoseconds);
-    }
-
-    #[test]
-    fn test_parse_timestamp_ms() {
-        let dt = parse_timestamp("1718000000000", TimestampUnit::Auto).unwrap();
-        assert_eq!(dt.to_rfc3339_opts(SecondsFormat::AutoSi, true), "2024-06-10T06:13:20Z");
-    }
-
-    #[test]
-    fn test_parse_timestamp_s() {
-        let dt = parse_timestamp("1718000000", TimestampUnit::Auto).unwrap();
-        assert_eq!(dt.to_rfc3339_opts(SecondsFormat::AutoSi, true), "2024-06-10T06:13:20Z");
-    }
-
-    #[test]
-    fn test_parse_timestamp_us() {
-        let dt = parse_timestamp("1718000000123456", TimestampUnit::Auto).unwrap();
-        assert_eq!(dt.to_rfc3339_opts(SecondsFormat::AutoSi, true), "2024-06-10T06:13:20.123456Z");
-    }
-
-    #[test]
-    fn test_parse_timestamp_float() {
-        let dt = parse_timestamp("1718000000.5", TimestampUnit::Auto).unwrap();
-        assert_eq!(dt.to_rfc3339_opts(SecondsFormat::AutoSi, true), "2024-06-10T06:13:20.500Z");
-    }
-
-    #[test]
-    fn test_timezone_conversion() {
-        let dt = parse_timestamp("1718000000000", TimestampUnit::Auto).unwrap();
-        let tz_helsinki: TzConfig = "Europe/Helsinki".parse().unwrap();
-        let formatted = format_datetime(dt, &tz_helsinki, None);
-        assert_eq!(formatted, "2024-06-10T09:13:20+03:00");
-
-        let tz_fixed: TzConfig = "+05:30".parse().unwrap();
-        let formatted_fixed = format_datetime(dt, &tz_fixed, None);
-        assert_eq!(formatted_fixed, "2024-06-10T11:43:20+05:30");
-
-        let tz_local = TzConfig::Local;
-        let formatted_local = format_datetime(dt, &tz_local, None);
-        assert!(!formatted_local.is_empty());
-
-        let formatted_rfc2822 = format_datetime(dt, &TzConfig::Utc, Some("rfc2822"));
-        assert_eq!(formatted_rfc2822, "Mon, 10 Jun 2024 06:13:20 +0000");
-    }
-
-    #[test]
-    fn test_custom_format() {
-        let dt = parse_timestamp("1718000000000", TimestampUnit::Auto).unwrap();
-        let formatted = format_datetime(dt, &TzConfig::Utc, Some("%Y-%m-%d %H:%M:%S"));
-        assert_eq!(formatted, "2024-06-10 06:13:20");
-    }
-
-    #[test]
-    fn test_date_to_timestamp() {
-        let tz = TzConfig::Utc;
-        let ts = process_item("2024-06-10T06:13:20Z", false, TimestampUnit::Milliseconds, &tz, None).unwrap();
-        assert_eq!(ts, "1718000000000");
-
-        let ts_sec = process_item("2024-06-10T06:13:20Z", false, TimestampUnit::Seconds, &tz, None).unwrap();
-        assert_eq!(ts_sec, "1718000000");
-    }
-
-    #[test]
-    fn test_process_item_auto() {
-        let tz = TzConfig::Utc;
-        // Number to RFC3339
-        let out1 = process_item("1718000000000", false, TimestampUnit::Auto, &tz, None).unwrap();
-        assert_eq!(out1, "2024-06-10T06:13:20Z");
-
-        // RFC3339 to Timestamp (auto reverse)
-        let out2 = process_item("2024-06-10T06:13:20Z", false, TimestampUnit::Milliseconds, &tz, None).unwrap();
-        assert_eq!(out2, "1718000000000");
-    }
-}
+mod tests;
