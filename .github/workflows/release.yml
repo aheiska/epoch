@@ -22,9 +22,6 @@ jobs:
           # macOS Apple Silicon (ARM64)
           - target: aarch64-apple-darwin
             os: macos-latest
-          # macOS Intel (x86_64)
-          - target: x86_64-apple-darwin
-            os: macos-13
 
     steps:
       - name: Checkout repository
